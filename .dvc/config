@@ -1,0 +1,8 @@
+[core]
+    analytics = false
+    remote = r2remote
+['remote "r2remote"']
+    url = s3://mlbucket
+    endpointurl = https://e64cfee986751acb93f3c92aa2aba111.r2.cloudflarestorage.com/
+    access_key_id = f6b089d71f46ad79f14797ddf9132cd2
+    secret_access_key = ad65f8831a252c235bac00acaac1777f3f65a553b91611a67dcbe1f685b97113
