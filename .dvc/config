@@ -1,6 +1,8 @@
 [core]
     analytics = false
     remote = r2remote
+[hydra]
+    enabled = True
 ['remote "r2remote"']
     url = s3://mlbucket
     endpointurl = https://e64cfee986751acb93f3c92aa2aba111.r2.cloudflarestorage.com/

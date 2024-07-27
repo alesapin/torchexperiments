@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
+#
 import math
+import json
 import os
 import torch
 import torch.nn as nn
@@ -7,12 +9,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import time
-from argparse import ArgumentParser
 from torch.nn.utils.rnn import pad_sequence
 from enum import Enum
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import tqdm
+from train import TransformerMorphModel
+from train import PositionalEncoding
 
 if not torch.cuda.is_available():
     raise Exception("Cuda not found")
@@ -65,10 +68,6 @@ SPEECH_PARTS = [
 SPEECH_PART_MAPPING = {str(s): num for num, s in enumerate(SPEECH_PARTS)}
 
 MASK_VALUE = 0.0
-
-def chunks(lst, n):
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
 
 def build_speech_part_array(sp):
     output = [0. for _ in range(len(SPEECH_PARTS))]
@@ -216,7 +215,6 @@ def parse_morpheme(str_repr, position):
     text, label = str_repr.split(':')
     return Morpheme(text, MorphemeLabel[label], position)
 
-
 def parse_word(str_repr, maxlen):
     if str_repr.count('\t') == 3:
         wordform, word_parts, _, class_info = str_repr.split('\t')
@@ -261,8 +259,6 @@ def parse_word(str_repr, maxlen):
         morphemes.append(parse_morpheme(part, global_index))
         global_index += len(part)
     return Word(morphemes, sp, is_conv, is_short, is_part)
-
-
 
 def _transform_classification(parse):
     parts = []
@@ -327,130 +323,7 @@ def measure_quality(predicted_targets, targets, words, verbose=False):
                equal / total, corr_words / len(targets)]
     return list(zip(metrics, results))
 
-def to_categorical(y, num_classes):
-    """ 1-hot encodes a tensor """
-    return np.eye(num_classes, dtype='uint8')[y]
-
-def _get_parse_repr(word):
-    features = []
-    word_text = word.get_word()
-    for index, letter in enumerate(word_text):
-        letter_features = []
-        vovelty = 0
-        if letter in VOWELS:
-            vovelty = 1
-        letter_features.append(vovelty)
-        if letter in LETTERS:
-            letter_code = LETTERS[letter]
-        #elif letter in ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']:
-        #    letter_code = 35
-        else:
-            letter_code = 0
-        letter_features += to_categorical(letter_code, num_classes=len(LETTERS) + 1).tolist()
-        letter_features += build_speech_part_array(word.sp)
-        #letter_features.append(word.is_part)
-        #letter_features.append(word.is_conv)
-        #letter_features.append(word.is_short)
-        features.append(letter_features)
-
-    X = torch.Tensor(features)
-    Y = torch.Tensor([PARTS_MAPPING[label] for label in word.get_simple_labels()]).long()
-    return X, Y
-
-def _pad_sequences(Xs, Ys, max_len):
-    newXs = pad_sequence(Xs, batch_first=True, padding_value=MASK_VALUE)
-    newYs = pad_sequence(Ys, batch_first=True, padding_value=MASK_VALUE)
-    return newXs, newYs
-
-def _prepare_words(words, max_len, verbose=True):
-    result_x, result_y = [], []
-    if verbose:
-        print("Preparing words")
-    for i, word in enumerate(words):
-        word_x, word_answer = _get_parse_repr(word)
-        result_x.append(word_x)
-        result_y.append(word_answer)
-        if i % 1000 == 0 and verbose:
-            print("Prepared", i)
-
-    return _pad_sequences(result_x, result_y, max_len)
-
-class Conv1MorphModel(nn.Module):
-    def __init__(self, dropouts, conv_layers, kernel_sizes):
-        super(Conv1MorphModel, self).__init__()
-
-        self.conv_layers = nn.ModuleList()
-        self.activation_layers = nn.ModuleList()
-        self.dropout_layers = nn.ModuleList()
-
-        self.activation = 'relu'
-        self.parts_mapping_len = len(PARTS_MAPPING)
-
-        input_channels = len(LETTERS) + 1 + 1 + len(SPEECH_PARTS)
-        print("Input channels", input_channels)
-
-        for i, (drop, units, window_size) in enumerate(zip(dropouts, conv_layers, kernel_sizes)):
-            print("i", i, drop, units, window_size)
-            self.conv_layers.append(nn.Conv1d(in_channels=input_channels if i == 0 else conv_layers[i-1], out_channels=units, kernel_size=window_size, padding='same'))
-            self.activation_layers.append(nn.ReLU() if self.activation == 'relu' else nn.Tanh())
-            self.dropout_layers.append(nn.Dropout(drop))
-
-        self.dense_layer = nn.Linear(conv_layers[-1], self.parts_mapping_len)
-
-    def forward(self, x):
-        x = x.permute(0, 2, 1)  # Change to (batch, channels, seq_length) for Conv1d
-        for conv, activation, drop in zip(self.conv_layers, self.activation_layers, self.dropout_layers):
-            x = conv(x)
-            x = activation(x)
-            x = drop(x)
-
-        x = x.permute(0, 2, 1)  # Change to (batch, time, features)
-        x = self.dense_layer(x)
-
-        return x
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=20):
-        super(PositionalEncoding, self).__init__()
-        self.encoding = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        self.encoding[:, 0::2] = torch.sin(position * div_term)
-        self.encoding[:, 1::2] = torch.cos(position * div_term)
-        self.encoding = self.encoding.unsqueeze(0)
-
-    def forward(self, x):
-        seq_len = x.size(1)
-        x = x + self.encoding[:, :seq_len, :].to(x.device)
-        return x
-
-class TransformerMorphModel(nn.Module):
-    def __init__(self, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, activation='relu'):
-        super(TransformerMorphModel, self).__init__()
-
-        self.parts_mapping_len = len(PARTS_MAPPING)
-
-        input_channels = len(LETTERS) + 1 + 1 + len(SPEECH_PARTS)
-        self.embedding = nn.Linear(input_channels, d_model)
-        self.pos_encoder = PositionalEncoding(d_model, 20)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, activation=activation)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
-
-        self.dense_layer = nn.Linear(d_model, self.parts_mapping_len)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        x = self.embedding(x)
-        x = self.pos_encoder(x)
-        x = x.permute(1, 0, 2)  # Change to (seq_length, batch_size, d_model) for Transformer
-        x = self.transformer_encoder(x)
-        x = x.permute(1, 0, 2)  # Change back to (batch_size, seq_length, d_model)
-        x = self.dropout(x)
-        x = self.dense_layer(x)
-
-        return x
-
-def eval_model(model, loader, data):
+def eval_model(model, loader, data, output_path):
     model.eval()
 
     def one_iteration(inputs):
@@ -480,42 +353,20 @@ def eval_model(model, loader, data):
     if i != len(data):
         raise Exception("Not all words validated {} / {}", i, len(data))
 
-    print(measure_quality(predicted_validation, [w.get_labels() for w in data], data, False))
+    quality = measure_quality(predicted_validation, [w.get_labels() for w in data], data, False)
 
-def train_model(model, train_loader, criterion, optimizer, num_epochs):
-    model.train()
-    def one_iteration(inputs, labels):
-        outputs = model(inputs.cuda())
-        return outputs, criterion(outputs.view(-1, outputs.shape[-1]).cuda(), labels.view(-1).cuda())
+    print(quality)
 
-    for epoch in tqdm.tqdm(range(num_epochs)):
-        running_loss = 0.0
-        print (f"Started epoch #{epoch + 1}")
-        counter = 0
-        model.train(True)
-        for inputs, labels in tqdm.tqdm(train_loader, leave=False):
-            counter += 1
-            if counter % 1000 == 0:
-                print("Counter", counter)
+    with open(output_path, 'w') as f:
+        json.dump(quality, f, indent=4)
 
-            optimizer.zero_grad()
-            _, loss = one_iteration(inputs, labels)
 
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-
-        print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {running_loss/len(train_loader)}')
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg : DictConfig) -> None:
     print("Config", OmegaConf.to_yaml(cfg))
     RESTRICTED_LEN = 20
     max_len = RESTRICTED_LEN
-
-    if not os.path.exists(cfg["cachedir"]):
-        os.makedirs(cfg["cachedir"])
 
     def load_dataset_from_file(path, max_len):
         counter = 0
@@ -532,62 +383,42 @@ def main(cfg : DictConfig) -> None:
                     print("Loaded", counter, "train words")
         return dataset
 
+    def load_dataset_from_binary(path):
+        checkpoint = torch.load(path)
+        return checkpoint["input_data"], checkpoint["labels"]
 
-    def load_from_cache_or_from_file(path, name, max_len):
-        cache_path = os.path.join(cfg["cachedir"], name)
-        if os.path.exists(cache_path):
-            checkpoint = torch.load(cache_path)
-            return checkpoint["input_data"], checkpoint["labels"]
-        else:
-            dataset = load_dataset_from_file(path, max_len)
-            input_data, labels = _prepare_words(dataset, max_len)
-            torch.save({'input_data': input_data, 'labels': labels}, cache_path)
-            return input_data, labels
+    val_data_path = os.path.join(cfg["outputs"]["prepared_val_set"])
+    if not os.path.exists(val_data_path):
+        raise Exception("No validation set")
 
+    test_data_path = os.path.join(cfg["outputs"]["prepared_test_set"])
+    if not os.path.exists(test_data_path):
+        raise Exception("No validation set")
 
-    train_data, train_labels = load_from_cache_or_from_file(cfg["training"]["train_set"], "train_set", RESTRICTED_LEN)
-    val_data, val_labels = load_from_cache_or_from_file(cfg["training"]["val_set"], "val_set", RESTRICTED_LEN)
-    test_data, test_labels = load_from_cache_or_from_file(cfg["training"]["test_set"], "test_set", RESTRICTED_LEN)
+    val_data, val_labels = load_dataset_from_binary(val_data_path)
+    test_data, test_labels = load_dataset_from_binary(test_data_path)
 
     print("Maxlen", max_len)
 
-    if cfg["model"] == "cnn":
-        convolutions = cfg["cnn"]["conv_layers"]
-        dropouts = cfg["cnn"]["dropouts"]
-        windows = cfg["cnn"]["windows"]
-        model = Conv1MorphModel(dropouts, convolutions, windows)
-    elif cfg["model"] == "transformer":
-        embedding_size = cfg["transformer"]["embedding_size"]
-        num_heads = cfg["transformer"]["num_heads"]
-        num_encoder_layers = cfg["transformer"]["num_encoder_layers"]
-        dim_feedforward = cfg["transformer"]["dim_feedforward"]
-        dropout = cfg["transformer"]["dropout"]
-        model = TransformerMorphModel(embedding_size, num_heads, num_encoder_layers, dim_feedforward, dropout)
-    else:
-        raise Exception(f"Unknown model {cfg['model']}")
+    model_path = cfg["outputs"]["model_path"]
+    if not os.path.exists(model_path):
+        raise Exception("Model doesn't exist")
+
+    model = torch.load(model_path)
 
     batch_size = cfg["training"]["batch_size"]
-    num_epochs = cfg["training"]["num_epochs"]
-    learning_rate = cfg["training"]["learning_rate"]
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     def get_loader(data, labels, shuffle):
         dataset = torch.utils.data.TensorDataset(data, labels)
         return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, generator=torch.Generator(device='cuda'),)
-
-    train_loader = get_loader(train_data, train_labels, True)
 
     validation_dataset = load_dataset_from_file(cfg["training"]["val_set"], RESTRICTED_LEN)
     val_loader = get_loader(val_data, val_labels, False)
     test_dataset = load_dataset_from_file(cfg["training"]["test_set"], RESTRICTED_LEN)
     test_loader = get_loader(test_data, test_labels, False)
 
-    train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs)
-    eval_model(model, val_loader, validation_dataset)
-    eval_model(model, test_loader, test_dataset)
-
+    eval_model(model, val_loader, validation_dataset, cfg["outputs"]["val_metrics"])
+    eval_model(model, test_loader, test_dataset, cfg["outputs"]["test_metrics"])
 
 if __name__ == "__main__":
     main()
-

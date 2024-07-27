@@ -2,17 +2,24 @@ training:
   train_set: data/train.txt
   val_set: data/val.txt
   test_set: data/test.txt
-  batch_size: 16384
-  num_epochs: 40
+  batch_size: 8192
+  num_epochs: 5
   learning_rate: 1e-3
 model: transformer
-cachedir: "cachedir"
+outputs:
+  base_dir: outputs
+  prepared_train_set: outputs/train_set.pt
+  prepared_val_set: outputs/val_set.pt
+  prepared_test_set: outputs/test_set.pt
+  model_path: outputs/model.pt
+  val_metrics: outputs/val_metrics.json
+  test_metrics: outputs/test_metrics.json
 cnn:
   conv_layers: [512, 512, 512]
   dropouts: [0.4, 0.3, 0.2]
   windows: [5, 5, 5]
 transformer:
-  embedding_size: 128
+  embedding_size: 256
   num_heads: 8
   num_encoder_layers: 4
   dim_feedforward: 768

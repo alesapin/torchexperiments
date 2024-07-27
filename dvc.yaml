@@ -1,0 +1,31 @@
+stages:
+  prepare:
+    cmd: python prepare_data.py
+    deps:
+      - prepare_data.py
+      - data/train.txt
+      - data/val.txt
+      - data/test.txt
+    outs:
+      - outputs/train_set.pt
+      - outputs/val_set.pt
+      - outputs/test_set.pt
+  train:
+    cmd: python train.py
+    deps:
+      - train.py
+      - conf/config.yaml
+      - outputs/train_set.pt
+    outs:
+      - outputs/model.pt
+  evaluate:
+    cmd: python evaluate.py
+    deps:
+      - data/val.txt
+      - data/test.txt
+      - outputs/val_set.pt
+      - outputs/test_set.pt
+      - outputs/model.pt
+    outs:
+      - outputs/val_metrics.json
+      - outputs/test_metrics.json
