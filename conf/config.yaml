@@ -3,9 +3,9 @@ training:
   val_set: data/val.txt
   test_set: data/test.txt
   batch_size: 8192
-  num_epochs: 5
+  num_epochs: 40
   learning_rate: 1e-3
-model: cnn
+model: transformer
 outputs:
   base_dir: outputs
   prepared_train_set: outputs/train_set.pt
@@ -15,6 +15,7 @@ outputs:
   val_metrics: outputs/val_metrics.json
   test_metrics: outputs/test_metrics.json
   run_id_file: outputs/run_id.txt
+  profiler_info: outputs/trace.json
 cnn:
   conv_layers: [512, 512, 512]
   dropouts: [0.4, 0.3, 0.2]

@@ -2,6 +2,7 @@
 import wandb
 import math
 
+from torch.profiler import profile, record_function, ProfilerActivity
 import os
 import torch
 import torch.nn as nn
@@ -234,9 +235,6 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_pa
         model.train(True)
         for inputs, labels in tqdm.tqdm(train_loader, leave=False):
             counter += 1
-            if counter % 1000 == 0:
-                print("Counter", counter)
-
             optimizer.zero_grad()
             _, loss = one_iteration(inputs, labels)
 
@@ -292,12 +290,15 @@ def main(cfg : DictConfig) -> None:
 
     def get_loader(data, labels, shuffle):
         dataset = torch.utils.data.TensorDataset(data, labels)
-        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, generator=torch.Generator(device='cuda'),)
+        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=True, num_workers=4, generator=torch.Generator(device='cuda'),)
 
     train_loader = get_loader(train_data, train_labels, True)
     start = time.time()
+    #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
     train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs, run_id_path=cfg["outputs"]["run_id_file"])
     end = time.time()
+
+    #prof.export_chrome_trace("trace.json")
     print("Training finished, saving model")
     model_path = cfg["outputs"]["model_path"]
     torch.save(model.state_dict(), model_path)
