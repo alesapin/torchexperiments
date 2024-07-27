@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-
-#!/usr/bin/env python3
+import wandb
 import math
+
 import os
 import torch
 import torch.nn as nn
@@ -111,6 +111,10 @@ class Conv1MorphModel(nn.Module):
     def __init__(self, dropouts, conv_layers, kernel_sizes):
         super(Conv1MorphModel, self).__init__()
 
+        self.convultions = conv_layers
+        self.dropouts = dropouts
+        self.kernel_sizes = kernel_sizes
+
         self.conv_layers = nn.ModuleList()
         self.activation_layers = nn.ModuleList()
         self.dropout_layers = nn.ModuleList()
@@ -141,6 +145,18 @@ class Conv1MorphModel(nn.Module):
 
         return x
 
+    def wandb_init(self, project, batch_size, num_epochs, learning_rate):
+        return wandb.init(project=project, config={
+                "model": "cnn1d",
+                "conv_layers": self.convultions,
+                "dropouts": self.dropouts,
+                "kernel_sizes": self.kernel_sizes,
+                "activation": self.activation,
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "num_epochs": num_epochs
+            })
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=20):
         super(PositionalEncoding, self).__init__()
@@ -163,10 +179,16 @@ class TransformerMorphModel(nn.Module):
         self.parts_mapping_len = len(PARTS_MAPPING)
 
         input_channels = len(LETTERS) + 1 + 1 + len(SPEECH_PARTS)
+        self.d_model = d_model
         self.embedding = nn.Linear(input_channels, d_model)
         self.pos_encoder = PositionalEncoding(d_model, 20)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, activation=activation)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
+        self.nhead = nhead
+        self.num_encoder_layers = num_encoder_layers
+        self.dim_feedforward = dim_feedforward
+        self.dropout = dropout
+        self.activation = activation
 
         self.dense_layer = nn.Linear(d_model, self.parts_mapping_len)
         self.dropout = nn.Dropout(dropout)
@@ -182,7 +204,24 @@ class TransformerMorphModel(nn.Module):
 
         return x
 
-def train_model(model, train_loader, criterion, optimizer, num_epochs):
+    def wandb_init(self, project, batch_size, num_epochs, learning_rate):
+        return wandb.init(project=project, config={
+                "model": "transformer",
+                "d_model": self.d_model,
+                "nhead": self.nhead,
+                "num_encoder_layers": self.num_encoder_layers,
+                "dim_feedforward": self.dim_feedforward,
+                "dropout": self.dropout,
+                "activation": self.activation,
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "num_epochs": num_epochs
+            })
+
+def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_path):
+    run = model.wandb_init("morph-torch-model", train_loader.batch_size, num_epochs, optimizer.param_groups[0]['lr'])
+
+    wandb.watch(model, log="all")
     model.train()
     def one_iteration(inputs, labels):
         outputs = model(inputs.cuda())
@@ -206,7 +245,13 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs):
 
             running_loss += loss.item()
 
+        avg_loss = running_loss / len(train_loader)
         print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {running_loss/len(train_loader)}')
+
+        wandb.log({"epoch": epoch+1, "train_loss": avg_loss})
+
+    with open(run_id_path, "w") as f:
+        f.write(run.id)
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg : DictConfig) -> None:
@@ -250,11 +295,24 @@ def main(cfg : DictConfig) -> None:
         return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, generator=torch.Generator(device='cuda'),)
 
     train_loader = get_loader(train_data, train_labels, True)
-    train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs)
+    start = time.time()
+    train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs, run_id_path=cfg["outputs"]["run_id_file"])
+    end = time.time()
     print("Training finished, saving model")
     model_path = cfg["outputs"]["model_path"]
-    torch.save(model, model_path)
+    torch.save(model.state_dict(), model_path)
+
+    training_info = {
+        "train_set_size": len(train_labels),
+        "model_size": os.path.getsize(model_path),
+        "train_time_ms": end - start,
+    }
+
+    wandb.log(training_info)
+
     print("Model saved to", model_path)
+
+    wandb.finish()
 
 
 if __name__ == "__main__":

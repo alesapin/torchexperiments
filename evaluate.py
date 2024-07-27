@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-#
+
+import tqdm
+import wandb
 import math
 import json
 import os
@@ -14,8 +16,7 @@ from enum import Enum
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import tqdm
-from train import TransformerMorphModel
-from train import PositionalEncoding
+from train import TransformerMorphModel, PositionalEncoding, Conv1MorphModel
 
 if not torch.cuda.is_available():
     raise Exception("Cuda not found")
@@ -323,7 +324,7 @@ def measure_quality(predicted_targets, targets, words, verbose=False):
                equal / total, corr_words / len(targets)]
     return list(zip(metrics, results))
 
-def eval_model(model, loader, data, output_path):
+def eval_model(model, loader, data, output_path, name):
     model.eval()
 
     def one_iteration(inputs):
@@ -334,14 +335,15 @@ def eval_model(model, loader, data, output_path):
     predicted_validation = []
     reverse_mapping = {v: k for k, v in PARTS_MAPPING.items()}
     with torch.no_grad():
+
         collected_outputs = []
-        for inputs, labels in loader:
+        for inputs, labels in tqdm.tqdm(loader):
             outputs = one_iteration(inputs)
             argmaxed = torch.argmax(outputs, dim=-1)
             collected_outputs.append(argmaxed)
 
         i = 0
-        for tensor in collected_outputs:
+        for tensor in tqdm.tqdm(collected_outputs):
             for row in tensor:
                 word = data[i]
                 cutted_prediction = row[:len(word)]
@@ -355,11 +357,12 @@ def eval_model(model, loader, data, output_path):
 
     quality = measure_quality(predicted_validation, [w.get_labels() for w in data], data, False)
 
+    wandb.log({name + "_" + k: v for k, v in quality})
+
     print(quality)
 
     with open(output_path, 'w') as f:
         json.dump(quality, f, indent=4)
-
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -404,7 +407,22 @@ def main(cfg : DictConfig) -> None:
     if not os.path.exists(model_path):
         raise Exception("Model doesn't exist")
 
-    model = torch.load(model_path)
+    if cfg["model"] == "cnn":
+        convolutions = cfg["cnn"]["conv_layers"]
+        dropouts = cfg["cnn"]["dropouts"]
+        windows = cfg["cnn"]["windows"]
+        model = Conv1MorphModel(dropouts, convolutions, windows)
+    elif cfg["model"] == "transformer":
+        embedding_size = cfg["transformer"]["embedding_size"]
+        num_heads = cfg["transformer"]["num_heads"]
+        num_encoder_layers = cfg["transformer"]["num_encoder_layers"]
+        dim_feedforward = cfg["transformer"]["dim_feedforward"]
+        dropout = cfg["transformer"]["dropout"]
+        model = TransformerMorphModel(embedding_size, num_heads, num_encoder_layers, dim_feedforward, dropout)
+    else:
+        raise Exception(f"Unknown model {cfg['model']}")
+
+    model.load_state_dict(torch.load(model_path))
 
     batch_size = cfg["training"]["batch_size"]
 
@@ -417,8 +435,28 @@ def main(cfg : DictConfig) -> None:
     test_dataset = load_dataset_from_file(cfg["training"]["test_set"], RESTRICTED_LEN)
     test_loader = get_loader(test_data, test_labels, False)
 
-    eval_model(model, val_loader, validation_dataset, cfg["outputs"]["val_metrics"])
-    eval_model(model, test_loader, test_dataset, cfg["outputs"]["test_metrics"])
+    with open(cfg["outputs"]["run_id_file"], "r") as f:
+        run_id = f.read().strip()
+
+    run = wandb.init(project="morph-torch-model", id=run_id, resume="must")
+
+    start_val = time.time()
+    eval_model(model, val_loader, validation_dataset, cfg["outputs"]["val_metrics"], "val")
+    end_val = time.time()
+    start_test = time.time()
+    eval_model(model, test_loader, test_dataset, cfg["outputs"]["test_metrics"], "test")
+    end_test = time.time()
+
+    eval_info = {
+        "val_set_size": len(val_labels),
+        "test_set_size": len(test_labels),
+        "eval_time_ms": end_val - start_val,
+        "test_time_ms": end_test - start_test,
+    }
+
+    wandb.log(eval_info)
+
+    wandb.finish()
 
 if __name__ == "__main__":
     main()

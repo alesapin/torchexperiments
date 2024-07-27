@@ -26,6 +26,7 @@ stages:
       - outputs/val_set.pt
       - outputs/test_set.pt
       - outputs/model.pt
+      - outputs/run_id.txt
     outs:
       - outputs/val_metrics.json
       - outputs/test_metrics.json
