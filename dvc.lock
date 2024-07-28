@@ -37,20 +37,20 @@ stages:
     deps:
     - path: conf/config.yaml
       hash: md5
-      md5: 4a18a2086832117d8b88d0fa12414246
-      size: 697
+      md5: 63dfc1d37044075627cdd10f38b00146
+      size: 719
     - path: outputs/train_set.pt
       hash: md5
       md5: bc4c9cf5f2b7739d059d4304fd0406bb
       size: 9500678372
     - path: train.py
       hash: md5
-      md5: 0482c56b73c790450e79854cdf113cbd
-      size: 10312
+      md5: a76cb8f3f827c1dd2baf9e05a26c625c
+      size: 11107
     outs:
     - path: outputs/model.pt
       hash: md5
-      md5: d92cdeabedab50f29b101a2adc93ed7c
+      md5: 3c674db3e43079c9c2ddca3405358b47
       size: 10624330
   evaluate:
     cmd: python evaluate.py
@@ -65,11 +65,11 @@ stages:
       size: 29509914
     - path: outputs/model.pt
       hash: md5
-      md5: d92cdeabedab50f29b101a2adc93ed7c
+      md5: 28fc38c5ef689a85c0319f8a88b17303
       size: 10624330
     - path: outputs/run_id.txt
       hash: md5
-      md5: 918cf995e42d3486d6e84b16b8b3c02a
+      md5: fef8eeef92a77c0ad6d2fb3a59ed15ee
       size: 8
     - path: outputs/test_set.pt
       hash: md5
@@ -82,9 +82,9 @@ stages:
     outs:
     - path: outputs/test_metrics.json
       hash: md5
-      md5: efddeaca6254f7c022065d07242c0b2c
-      size: 300
+      md5: 95490bad23da949e08021b11358c2255
+      size: 304
     - path: outputs/val_metrics.json
       hash: md5
-      md5: a667bfb9e9d18c913f24c9a6048352f9
-      size: 300
+      md5: b1da8855eaa75f3dc753e55c0938cd96
+      size: 301

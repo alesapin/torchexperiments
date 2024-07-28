@@ -5,6 +5,7 @@ training:
   batch_size: 8192
   num_epochs: 40
   learning_rate: 1e-3
+  enable_profiling: 0
 model: transformer
 outputs:
   base_dir: outputs

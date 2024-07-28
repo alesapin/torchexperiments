@@ -219,15 +219,11 @@ class TransformerMorphModel(nn.Module):
                 "num_epochs": num_epochs
             })
 
-def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_path):
+def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_path, num_iterations=None):
     run = model.wandb_init("morph-torch-model", train_loader.batch_size, num_epochs, optimizer.param_groups[0]['lr'])
 
     wandb.watch(model, log="all")
     model.train()
-    def one_iteration(inputs, labels):
-        outputs = model(inputs.cuda())
-        return outputs, criterion(outputs.view(-1, outputs.shape[-1]).cuda(), labels.view(-1).cuda())
-
     for epoch in tqdm.tqdm(range(num_epochs)):
         running_loss = 0.0
         print (f"Started epoch #{epoch + 1}")
@@ -236,17 +232,21 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_pa
         for inputs, labels in tqdm.tqdm(train_loader, leave=False):
             counter += 1
             optimizer.zero_grad()
-            _, loss = one_iteration(inputs, labels)
-
+            inputs, labels = inputs.cuda(non_blocking=True), labels.cuda(non_blocking=True)
+            outputs = model(inputs)
+            loss = criterion(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
             loss.backward()
             optimizer.step()
 
-            running_loss += loss.item()
+            running_loss += loss.detach()
+
+            if num_iterations is not None and counter >= num_iterations:
+                break
 
         avg_loss = running_loss / len(train_loader)
         print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {running_loss/len(train_loader)}')
 
-        wandb.log({"epoch": epoch+1, "train_loss": avg_loss})
+        wandb.log({"epoch": epoch+1, "train_loss": avg_loss.item()})
 
     with open(run_id_path, "w") as f:
         f.write(run.id)
@@ -286,19 +286,32 @@ def main(cfg : DictConfig) -> None:
     num_epochs = cfg["training"]["num_epochs"]
     learning_rate = cfg["training"]["learning_rate"]
     criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, capturable=True)
 
     def get_loader(data, labels, shuffle):
         dataset = torch.utils.data.TensorDataset(data, labels)
-        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=True, num_workers=4, generator=torch.Generator(device='cuda'),)
+        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=True, num_workers=16, persistent_workers=True,)
 
-    train_loader = get_loader(train_data, train_labels, True)
+    train_loader = get_loader(train_data, train_labels, False)
     start = time.time()
-    #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-    train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs, run_id_path=cfg["outputs"]["run_id_file"])
+    if cfg["training"]["enable_profiling"]:
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True, with_stack=True, profile_memory=True, with_flops=True, with_modules=True) as prof:
+            train_model(model, train_loader, criterion, optimizer, num_epochs=1, run_id_path=cfg["outputs"]["run_id_file"], num_iterations=30)
+
+        for evt in prof.key_averages():
+            if "aten::item" in evt.key:
+                print(evt.key, evt.cpu_time_total)
+                print(evt.stack)
+
+        print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
+
+        prof.export_chrome_trace(cfg["outputs"]["profiler_info"])
+
+    else:
+        train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs, run_id_path=cfg["outputs"]["run_id_file"])
+
     end = time.time()
 
-    #prof.export_chrome_trace("trace.json")
     print("Training finished, saving model")
     model_path = cfg["outputs"]["model_path"]
     torch.save(model.state_dict(), model_path)
