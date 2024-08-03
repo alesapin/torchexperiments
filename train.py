@@ -3,6 +3,8 @@ import wandb
 import math
 
 from torch.profiler import profile, record_function, ProfilerActivity
+from torch.utils.data import DataLoader, Dataset
+import random
 import os
 import torch
 import torch.nn as nn
@@ -174,7 +176,7 @@ class PositionalEncoding(nn.Module):
         return x
 
 class TransformerMorphModel(nn.Module):
-    def __init__(self, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, activation='relu'):
+    def __init__(self, d_model, nhead, num_encoder_layers, dim_feedforward, dropout, activation='gelu'):
         super(TransformerMorphModel, self).__init__()
 
         self.parts_mapping_len = len(PARTS_MAPPING)
@@ -219,10 +221,16 @@ class TransformerMorphModel(nn.Module):
                 "num_epochs": num_epochs
             })
 
-def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_path, num_iterations=None):
-    run = model.wandb_init("morph-torch-model", train_loader.batch_size, num_epochs, optimizer.param_groups[0]['lr'])
+def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_path, mix_precision=False, num_iterations=None):
 
-    wandb.watch(model, log="all")
+    if num_iterations is None:
+        run = model.wandb_init("morph-torch-model", train_loader.batch_size, num_epochs, optimizer.param_groups[0]['lr'])
+        wandb.watch(model, log="all")
+
+    #scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=optimizer.param_groups[0]['lr'],
+    #                                            steps_per_epoch=len(train_loader),
+    #                                            epochs=num_epochs)
+    scaler = torch.cuda.amp.GradScaler()
     model.train()
     for epoch in tqdm.tqdm(range(num_epochs)):
         running_loss = 0.0
@@ -233,23 +241,67 @@ def train_model(model, train_loader, criterion, optimizer, num_epochs, run_id_pa
             counter += 1
             optimizer.zero_grad()
             inputs, labels = inputs.cuda(non_blocking=True), labels.cuda(non_blocking=True)
-            outputs = model(inputs)
-            loss = criterion(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
-            loss.backward()
-            optimizer.step()
+            if mix_precision:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    outputs = model(inputs)
+                    loss = criterion(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
+                scaler.scale(loss).backward()
+
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(inputs)
+                loss = criterion(outputs.view(-1, outputs.shape[-1]), labels.view(-1))
+                loss.backward()
+                optimizer.step()
 
             running_loss += loss.detach()
 
+            #scheduler.step()
             if num_iterations is not None and counter >= num_iterations:
                 break
 
         avg_loss = running_loss / len(train_loader)
         print(f'Epoch {epoch+1}/{num_epochs}, Train Loss: {running_loss/len(train_loader)}')
 
-        wandb.log({"epoch": epoch+1, "train_loss": avg_loss.item()})
+        if num_iterations is None:
+            wandb.log({"epoch": epoch+1, "train_loss": avg_loss.item()})
 
-    with open(run_id_path, "w") as f:
-        f.write(run.id)
+    if num_iterations is None:
+        with open(run_id_path, "w") as f:
+            f.write(run.id)
+
+# Custom collate_fn to handle padding
+def collate_fn(batch):
+    features, labels = zip(*batch)
+
+    # Pad sequences in features
+    features_padded = pad_sequence(features, batch_first=True, padding_value=0)
+    labels_padded = pad_sequence(labels, batch_first=True, padding_value=0)
+
+    return features_padded, labels_padded
+
+class MyDataset(Dataset):
+    def __init__(self, features, labels):
+        self.features = features
+        self.labels = labels
+        assert len(features) == len(labels), "Features and labels must have the same length"
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        return self.features[idx].clone().detach(), self.labels[idx].clone().detach()
+
+# Function to load data with bucketed batching
+def bucketed_dataloader(features, labels, batch_size):
+    # Create a DataLoader from the flattened buckets
+    dataset = MyDataset(features, labels)
+    return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=16, pin_memory=True)
+
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg : DictConfig) -> None:
@@ -262,11 +314,14 @@ def main(cfg : DictConfig) -> None:
         raise Exception("Data is not prepared")
 
     def load_from_cache_or_from_file(path):
-        checkpoint = torch.load(path)
-        return checkpoint["input_data"], checkpoint["labels"]
+        ds = torch.load(path, weights_only=True, mmap=True)
+        return ds["input_data"], ds["labels"]
 
+    print("Loading data")
+    start = time.time()
     train_data, train_labels = load_from_cache_or_from_file(train_data_path)
-    print("Maxlen", max_len)
+    print("Load finished in", time.time() - start, "s")
+
     if cfg["model"] == "cnn":
         convolutions = cfg["cnn"]["conv_layers"]
         dropouts = cfg["cnn"]["dropouts"]
@@ -286,17 +341,20 @@ def main(cfg : DictConfig) -> None:
     num_epochs = cfg["training"]["num_epochs"]
     learning_rate = cfg["training"]["learning_rate"]
     criterion = nn.CrossEntropyLoss(ignore_index=0)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, capturable=True)
 
-    def get_loader(data, labels, shuffle):
-        dataset = torch.utils.data.TensorDataset(data, labels)
-        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, pin_memory=True, num_workers=16, persistent_workers=True,)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
-    train_loader = get_loader(train_data, train_labels, False)
+    train_loader = bucketed_dataloader(train_data, train_labels, batch_size)
+
     start = time.time()
     if cfg["training"]["enable_profiling"]:
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True, with_stack=True, profile_memory=True, with_flops=True, with_modules=True) as prof:
-            train_model(model, train_loader, criterion, optimizer, num_epochs=1, run_id_path=cfg["outputs"]["run_id_file"], num_iterations=30)
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True, with_stack=True, profile_memory=True,
+            with_flops=True, with_modules=True,
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(cfg["outputs"]["profiler_info"])) as prof:
+
+            train_model(model, train_loader, criterion, optimizer, num_epochs=1, run_id_path=cfg["outputs"]["run_id_file"], mix_precision=cfg["training"]["mix_precision"], num_iterations=30)
 
         for evt in prof.key_averages():
             if "aten::item" in evt.key:
@@ -304,11 +362,8 @@ def main(cfg : DictConfig) -> None:
                 print(evt.stack)
 
         print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
-
-        prof.export_chrome_trace(cfg["outputs"]["profiler_info"])
-
     else:
-        train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs, run_id_path=cfg["outputs"]["run_id_file"])
+        train_model(model, train_loader, criterion, optimizer, num_epochs=num_epochs, run_id_path=cfg["outputs"]["run_id_file"], mix_precision=cfg["training"]["mix_precision"])
 
     end = time.time()
 
@@ -322,11 +377,13 @@ def main(cfg : DictConfig) -> None:
         "train_time_ms": end - start,
     }
 
-    wandb.log(training_info)
+    if not cfg["training"]["enable_profiling"]:
+        wandb.log(training_info)
 
     print("Model saved to", model_path)
 
-    wandb.finish()
+    if not cfg["training"]["enable_profiling"]:
+        wandb.finish()
 
 
 if __name__ == "__main__":

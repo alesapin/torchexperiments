@@ -17,40 +17,40 @@ stages:
       size: 29509914
     - path: prepare_data.py
       hash: md5
-      md5: 96f899ca2e5920dd6c72aa517d0cb219
-      size: 10008
+      md5: 2ed6b032e147a34a652a9735e482c007
+      size: 10874
     outs:
     - path: outputs/test_set.pt
       hash: md5
-      md5: f3774878d8100ebc9ed0e2bf6cbef83d
-      size: 2714481950
+      md5: f8633bade75e5c4e3fe6ca524ec53ad7
+      size: 1784412962
     - path: outputs/train_set.pt
       hash: md5
-      md5: bc4c9cf5f2b7739d059d4304fd0406bb
-      size: 9500678372
+      md5: 66dc1b3ec9b9bece8f5d9da4552e7488
+      size: 6279688358
     - path: outputs/val_set.pt
       hash: md5
-      md5: 9c863444ca212441f84f48aa2f2289b3
-      size: 1357246552
+      md5: 5220f199a1c771e51aa34f9269763583
+      size: 890951346
   train:
     cmd: python train.py
     deps:
     - path: conf/config.yaml
       hash: md5
-      md5: 63dfc1d37044075627cdd10f38b00146
-      size: 719
+      md5: b67582223798109c7730d361d848b4b9
+      size: 736
     - path: outputs/train_set.pt
       hash: md5
-      md5: bc4c9cf5f2b7739d059d4304fd0406bb
-      size: 9500678372
+      md5: 66dc1b3ec9b9bece8f5d9da4552e7488
+      size: 6279688358
     - path: train.py
       hash: md5
-      md5: a76cb8f3f827c1dd2baf9e05a26c625c
-      size: 11107
+      md5: 2da290a9508837d7438bdf6d59111ce5
+      size: 13169
     outs:
     - path: outputs/model.pt
       hash: md5
-      md5: 3c674db3e43079c9c2ddca3405358b47
+      md5: 29f59f63ec1ad1ba1aceb9f3eb88fe2f
       size: 10624330
   evaluate:
     cmd: python evaluate.py
@@ -65,26 +65,26 @@ stages:
       size: 29509914
     - path: outputs/model.pt
       hash: md5
-      md5: 28fc38c5ef689a85c0319f8a88b17303
+      md5: 29f59f63ec1ad1ba1aceb9f3eb88fe2f
       size: 10624330
     - path: outputs/run_id.txt
       hash: md5
-      md5: fef8eeef92a77c0ad6d2fb3a59ed15ee
+      md5: c78e3a1429f065379dfb4998cb890139
       size: 8
     - path: outputs/test_set.pt
       hash: md5
-      md5: f3774878d8100ebc9ed0e2bf6cbef83d
-      size: 2714481950
+      md5: f8633bade75e5c4e3fe6ca524ec53ad7
+      size: 1784412962
     - path: outputs/val_set.pt
       hash: md5
-      md5: 9c863444ca212441f84f48aa2f2289b3
-      size: 1357246552
+      md5: 5220f199a1c771e51aa34f9269763583
+      size: 890951346
     outs:
     - path: outputs/test_metrics.json
       hash: md5
-      md5: 95490bad23da949e08021b11358c2255
-      size: 304
+      md5: 7659995ef0f98abcb3e6f518e54e2ac1
+      size: 300
     - path: outputs/val_metrics.json
       hash: md5
-      md5: b1da8855eaa75f3dc753e55c0938cd96
-      size: 301
+      md5: 758addf30d1ef2fb14e160eb6f3ac66c
+      size: 299

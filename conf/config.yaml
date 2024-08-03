@@ -2,10 +2,11 @@ training:
   train_set: data/train.txt
   val_set: data/val.txt
   test_set: data/test.txt
-  batch_size: 8192
-  num_epochs: 40
+  batch_size: 4096
+  num_epochs: 50
   learning_rate: 1e-3
   enable_profiling: 0
+  mix_precision: 1
 model: transformer
 outputs:
   base_dir: outputs
@@ -16,7 +17,7 @@ outputs:
   val_metrics: outputs/val_metrics.json
   test_metrics: outputs/test_metrics.json
   run_id_file: outputs/run_id.txt
-  profiler_info: outputs/trace.json
+  profiler_info: outputs/profiler
 cnn:
   conv_layers: [512, 512, 512]
   dropouts: [0.4, 0.3, 0.2]

@@ -2,10 +2,12 @@
 import hydra
 import numpy as np
 from enum import Enum
+import random
 from torch.nn.utils.rnn import pad_sequence
 from omegaconf import DictConfig, OmegaConf
 import os
 import torch
+from datasets import Dataset, load_from_disk
 
 
 PARTS_MAPPING = {
@@ -311,16 +313,11 @@ def _get_parse_repr(word):
         #letter_features.append(word.is_short)
         features.append(letter_features)
 
-    X = torch.Tensor(features)
-    Y = torch.Tensor([PARTS_MAPPING[label] for label in word.get_simple_labels()]).long()
+    X = torch.Tensor(features).float()
+    Y = torch.Tensor([PARTS_MAPPING[label] for label in word.get_simple_labels()]).byte()
     return X, Y
 
-def _pad_sequences(Xs, Ys, max_len):
-    newXs = pad_sequence(Xs, batch_first=True, padding_value=MASK_VALUE)
-    newYs = pad_sequence(Ys, batch_first=True, padding_value=MASK_VALUE)
-    return newXs, newYs
-
-def _prepare_words(words, max_len, verbose=True):
+def _prepare_words(words, verbose=True):
     result_x, result_y = [], []
     if verbose:
         print("Preparing words")
@@ -331,7 +328,33 @@ def _prepare_words(words, max_len, verbose=True):
         if i % 1000 == 0 and verbose:
             print("Prepared", i)
 
-    return _pad_sequences(result_x, result_y, max_len)
+    return result_x, result_y
+
+def create_buckets(features, labels, bucket_size):
+    # Combine features and labels, then sort by length of features
+    data = list(zip(features, labels))
+    data.sort(key=lambda x: len(x[0]))  # Sort by the length of the features
+
+    # Create buckets
+    buckets = [data[i:i + bucket_size] for i in range(0, len(data), bucket_size)]
+
+    return buckets
+
+# Function to load data with bucketed batching
+def bucketed_data(features, labels, bucket_size):
+    # Create buckets
+    buckets = create_buckets(features, labels, bucket_size)
+
+    # Shuffle buckets if needed
+    random.shuffle(buckets)
+
+    # Flatten buckets into one list
+    flattened_buckets = [item for bucket in buckets for item in bucket]
+    unzipped = list(zip(*flattened_buckets))
+    print("Unzipped len", len(unzipped))
+    print("Zero", len(unzipped[0]))
+    print("One", len(unzipped[1]))
+    return unzipped[0], unzipped[1]
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -359,15 +382,17 @@ def main(cfg : DictConfig) -> None:
         return dataset
 
 
-    def save_dataset_to_file(source_path, dest_path, max_len):
+    def save_dataset_to_file(source_path, dest_path, max_len, bucketed):
         dataset = load_dataset_from_file(source_path, max_len)
-        input_data, labels = _prepare_words(dataset, max_len)
+        input_data, labels = _prepare_words(dataset)
+        if bucketed:
+            input_data, labels = bucketed_data(input_data, labels, cfg["training"]["batch_size"])
         torch.save({'input_data': input_data, 'labels': labels}, dest_path)
 
 
-    save_dataset_to_file(cfg["training"]["train_set"], cfg["outputs"]["prepared_train_set"], RESTRICTED_LEN)
-    save_dataset_to_file(cfg["training"]["val_set"], cfg["outputs"]["prepared_val_set"], RESTRICTED_LEN)
-    save_dataset_to_file(cfg["training"]["test_set"], cfg["outputs"]["prepared_test_set"], RESTRICTED_LEN)
+    save_dataset_to_file(cfg["training"]["train_set"], cfg["outputs"]["prepared_train_set"], RESTRICTED_LEN, True)
+    save_dataset_to_file(cfg["training"]["val_set"], cfg["outputs"]["prepared_val_set"], RESTRICTED_LEN, False)
+    save_dataset_to_file(cfg["training"]["test_set"], cfg["outputs"]["prepared_test_set"], RESTRICTED_LEN, False)
 
 if __name__ == "__main__":
     main()

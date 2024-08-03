@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+from torch.utils.data import DataLoader, Dataset
 import tqdm
 import wandb
 import math
@@ -364,6 +365,34 @@ def eval_model(model, loader, data, output_path, name):
     with open(output_path, 'w') as f:
         json.dump(quality, f, indent=4)
 
+# Custom collate_fn to handle padding
+def collate_fn(batch):
+    features, labels = zip(*batch)
+
+    # Pad sequences in features
+    features_padded = pad_sequence(features, batch_first=True, padding_value=0)
+    labels_padded = pad_sequence(labels, batch_first=True, padding_value=0)
+
+    return features_padded, labels_padded
+
+class MyDataset(Dataset):
+    def __init__(self, features, labels):
+        self.features = features
+        self.labels = labels
+        assert len(features) == len(labels), "Features and labels must have the same length"
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, idx):
+        return self.features[idx].clone().detach(), self.labels[idx].clone().detach()
+
+# Function to load data with bucketed batching
+def bucketed_dataloader(features, labels, batch_size):
+    # Create a DataLoader from the flattened buckets
+    dataset = MyDataset(features, labels)
+    return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_fn, shuffle=False, num_workers=16, pin_memory=True)
+
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg : DictConfig) -> None:
@@ -387,7 +416,7 @@ def main(cfg : DictConfig) -> None:
         return dataset
 
     def load_dataset_from_binary(path):
-        checkpoint = torch.load(path)
+        checkpoint = torch.load(path, weights_only=True, mmap=True)
         return checkpoint["input_data"], checkpoint["labels"]
 
     val_data_path = os.path.join(cfg["outputs"]["prepared_val_set"])
@@ -426,14 +455,10 @@ def main(cfg : DictConfig) -> None:
 
     batch_size = cfg["training"]["batch_size"]
 
-    def get_loader(data, labels, shuffle):
-        dataset = torch.utils.data.TensorDataset(data, labels)
-        return torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, generator=torch.Generator(device='cuda'),)
-
     validation_dataset = load_dataset_from_file(cfg["training"]["val_set"], RESTRICTED_LEN)
-    val_loader = get_loader(val_data, val_labels, False)
+    val_loader = bucketed_dataloader(val_data, val_labels, batch_size)
     test_dataset = load_dataset_from_file(cfg["training"]["test_set"], RESTRICTED_LEN)
-    test_loader = get_loader(test_data, test_labels, False)
+    test_loader = bucketed_dataloader(test_data, test_labels, batch_size)
 
     with open(cfg["outputs"]["run_id_file"], "r") as f:
         run_id = f.read().strip()

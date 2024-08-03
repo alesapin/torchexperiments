@@ -1,3 +1,6 @@
 /val_metrics.json
 /test_metrics.json
 /model.pt
+/train_set.pt
+/val_set.pt
+/test_set.pt
